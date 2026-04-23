@@ -9,7 +9,9 @@
 // This pass finds arc.define ops that produce !seq.clock values, ensures each
 // unique clock source is covered by exactly one canonical arc.call, and strips
 // the !seq.clock result from mixed arcs (those that return both a clock and
-// non-clock results).
+// non-clock results).  When the clock argument of a mixed arc is used solely
+// to produce the clock output it is also removed from the no-clock arc's
+// signature.
 //
 //===----------------------------------------------------------------------===//
 
@@ -40,23 +42,31 @@ using namespace arc;
 using namespace hw;
 
 //===----------------------------------------------------------------------===//
-// Helpers
+// Data structures
 //===----------------------------------------------------------------------===//
 
 namespace {
 
-/// Describes how a clock-producing arc.define generates its !seq.clock result.
+/// How a clock-producing arc.define generates its !seq.clock result.
 struct ClockArcInfo {
-  /// Index of the !seq.clock result in the arc's function type.
-  unsigned clockResultIdx;
-  /// Index of the block argument that is the i1 input to seq.to_clock.
-  unsigned clockArgIdx;
+  unsigned clockResultIdx; ///< Index of the !seq.clock result.
+  unsigned clockArgIdx;    ///< Index of the i1 argument fed to seq.to_clock.
+};
+
+/// Companion "no-clock" arc together with the mapping from each original
+/// operand position to the corresponding position in the new call (-1 when
+/// the operand has been dropped because it was only used to produce the clock).
+struct NoClockArcInfo {
+  /// nullptr when the original arc was clock-only and has no remaining results.
+  arc::DefineOp defineOp;
+  /// argMapping[i] = new operand index for original operand i, or -1 if dropped.
+  SmallVector<int> argMapping;
 };
 
 } // namespace
 
 //===----------------------------------------------------------------------===//
-// Pass Implementation
+// Pass
 //===----------------------------------------------------------------------===//
 
 namespace {
@@ -65,30 +75,22 @@ struct DedupClocksPass
   void runOnOperation() override;
 
 private:
-  /// Try to identify the ClockArcInfo for a DefineOp.  Returns failure if the
-  /// op does not produce a !seq.clock or if the clock cannot be traced to a
-  /// direct seq.to_clock of a single block argument.
   LogicalResult analyzeDefine(arc::DefineOp defineOp, ClockArcInfo &info);
 
-  /// Return an existing clock-only arc (i1 -> !seq.clock) if one exists in the
-  /// module, or create a fresh one named "__arc_dedup_clock__".
   arc::DefineOp getOrCreateCanonicalClockArc(mlir::ModuleOp moduleOp,
-                                             OpBuilder &builder,
-                                             Namespace &ns);
+                                             OpBuilder &builder, Namespace &ns);
 
-  /// Clone defineOp into a new arc that omits the !seq.clock result.  Returns
-  /// nullptr when defineOp is already clock-only (no non-clock results left).
-  arc::DefineOp createNoClockArc(arc::DefineOp defineOp,
-                                  const ClockArcInfo &info,
-                                  StringRef newName, OpBuilder &builder);
+  /// Build the no-clock companion arc.  Returns a populated NoClockArcInfo;
+  /// defineOp is nullptr when nothing remains after removing the clock result.
+  NoClockArcInfo createNoClockArc(arc::DefineOp defineOp,
+                                   const ClockArcInfo &info, StringRef newName,
+                                   OpBuilder &builder);
 
-  /// Update a single hw.module: insert canonical clock calls and rewrite all
-  /// clock-producing arc.calls.
   void processHwModule(
       hw::HWModuleOp hwModule,
       const DenseMap<StringAttr, ClockArcInfo> &clockArcInfos,
       arc::DefineOp canonicalClockArc,
-      const DenseMap<StringAttr, arc::DefineOp> &noClockArcs);
+      const DenseMap<StringAttr, NoClockArcInfo> &noClockArcs);
 };
 } // namespace
 
@@ -101,7 +103,6 @@ LogicalResult DedupClocksPass::analyzeDefine(arc::DefineOp defineOp,
   auto seqClockType = seq::ClockType::get(&getContext());
   auto funcType = defineOp.getFunctionType();
 
-  // Locate the first !seq.clock result.
   int clockResultIdx = -1;
   for (auto [idx, type] : llvm::enumerate(funcType.getResults())) {
     if (type == seqClockType) {
@@ -112,10 +113,8 @@ LogicalResult DedupClocksPass::analyzeDefine(arc::DefineOp defineOp,
   if (clockResultIdx < 0)
     return failure();
 
-  // The clock value in the output must trace back to seq.to_clock(%blockArg).
   auto &block = defineOp.getBodyBlock();
-  auto *terminator = block.getTerminator();
-  Value clockVal = terminator->getOperand(clockResultIdx);
+  Value clockVal = block.getTerminator()->getOperand(clockResultIdx);
 
   auto toClockOp = clockVal.getDefiningOp<seq::ToClockOp>();
   if (!toClockOp)
@@ -142,8 +141,6 @@ DedupClocksPass::getOrCreateCanonicalClockArc(mlir::ModuleOp moduleOp,
   auto seqClockType = seq::ClockType::get(ctx);
   auto i1Type = IntegerType::get(ctx, 1);
 
-  // Reuse an existing arc with signature (i1) -> !seq.clock whose body is a
-  // direct seq.to_clock of the single argument.
   for (auto defineOp : moduleOp.getOps<arc::DefineOp>()) {
     auto ft = defineOp.getFunctionType();
     if (ft.getNumInputs() != 1 || ft.getNumResults() != 1)
@@ -155,8 +152,6 @@ DedupClocksPass::getOrCreateCanonicalClockArc(mlir::ModuleOp moduleOp,
       return defineOp;
   }
 
-  // Nothing found – create a fresh canonical clock arc at the top of the
-  // module so all hw.modules can reach it.
   builder.setInsertionPointToStart(moduleOp.getBody());
   auto loc = moduleOp.getLoc();
   auto ft = FunctionType::get(ctx, {i1Type}, {seqClockType});
@@ -176,44 +171,77 @@ DedupClocksPass::getOrCreateCanonicalClockArc(mlir::ModuleOp moduleOp,
 // createNoClockArc
 //===----------------------------------------------------------------------===//
 
-arc::DefineOp DedupClocksPass::createNoClockArc(arc::DefineOp defineOp,
-                                                  const ClockArcInfo &info,
-                                                  StringRef newName,
-                                                  OpBuilder &builder) {
+NoClockArcInfo DedupClocksPass::createNoClockArc(arc::DefineOp defineOp,
+                                                   const ClockArcInfo &info,
+                                                   StringRef newName,
+                                                   OpBuilder &builder) {
   auto *ctx = &getContext();
   auto funcType = defineOp.getFunctionType();
+  auto loc = defineOp.getLoc();
+
+  auto *srcBlock = &defineOp.getBodyBlock();
+
+  // Identify the seq.to_clock op that directly feeds the clock output.
+  Value clockOutputVal =
+      srcBlock->getTerminator()->getOperand(info.clockResultIdx);
+  Operation *toClockOp = clockOutputVal.getDefiningOp();
+
+  // If the clock argument's only use is that seq.to_clock, it becomes entirely
+  // unused once we drop that op — remove it from the no-clock signature.
+  BlockArgument clockArg = srcBlock->getArgument(info.clockArgIdx);
+  bool dropClockArg = llvm::all_of(clockArg.getUsers(), [&](Operation *user) {
+    return user == toClockOp;
+  });
+
+  // Build the operand mapping: original index → new index, or -1 if dropped.
+  NoClockArcInfo result;
+  result.argMapping.resize(funcType.getNumInputs());
+  SmallVector<Type> newInputTypes;
+  int nextNewIdx = 0;
+  for (unsigned i = 0; i < funcType.getNumInputs(); ++i) {
+    if (i == info.clockArgIdx && dropClockArg) {
+      result.argMapping[i] = -1;
+    } else {
+      result.argMapping[i] = nextNewIdx++;
+      newInputTypes.push_back(funcType.getInput(i));
+    }
+  }
 
   // Build result types without the clock.
-  SmallVector<Type> newResults;
+  SmallVector<Type> newResultTypes;
   for (auto [idx, type] : llvm::enumerate(funcType.getResults()))
     if (idx != info.clockResultIdx)
-      newResults.push_back(type);
+      newResultTypes.push_back(type);
 
-  if (newResults.empty())
-    return nullptr; // clock-only arc, nothing remains
+  if (newResultTypes.empty()) {
+    result.defineOp = nullptr;
+    return result;
+  }
 
-  auto newFuncType = FunctionType::get(ctx, funcType.getInputs(), newResults);
+  auto newFuncType = FunctionType::get(ctx, newInputTypes, newResultTypes);
 
   builder.setInsertionPoint(defineOp);
-  auto loc = defineOp.getLoc();
-  auto noClockArc = arc::DefineOp::create(builder, loc, newName, newFuncType);
+  result.defineOp = arc::DefineOp::create(builder, loc, newName, newFuncType);
 
-  // Clone the body, remapping arguments.
-  auto *srcBlock = &defineOp.getBodyBlock();
-  auto &dstBodyBlock = noClockArc.getBody().emplaceBlock();
-  dstBodyBlock.addArguments(funcType.getInputs(),
-                             SmallVector<Location>(funcType.getNumInputs(), loc));
-
+  // Build the body block with only the kept arguments.
+  auto &dstBlock = result.defineOp.getBody().emplaceBlock();
   IRMapping mapping;
-  for (auto [srcArg, dstArg] :
-       llvm::zip(srcBlock->getArguments(), dstBodyBlock.getArguments()))
-    mapping.map(srcArg, dstArg);
+  for (unsigned i = 0; i < funcType.getNumInputs(); ++i) {
+    if (result.argMapping[i] == -1)
+      continue;
+    Value newArg = dstBlock.addArgument(funcType.getInput(i), loc);
+    mapping.map(srcBlock->getArgument(i), newArg);
+  }
 
-  OpBuilder bb = OpBuilder::atBlockEnd(&dstBodyBlock);
-  for (auto &op : srcBlock->without_terminator())
+  // Clone all non-terminator ops, skipping the clock-feeding seq.to_clock op.
+  OpBuilder bb = OpBuilder::atBlockEnd(&dstBlock);
+  for (auto &op : srcBlock->without_terminator()) {
+    if (&op == toClockOp)
+      continue;
     bb.clone(op, mapping);
+  }
 
-  // Rebuild arc.output omitting the clock result.
+  // Rebuild arc.output without the clock result.
   SmallVector<Value> newOutputVals;
   for (auto [idx, operand] :
        llvm::enumerate(srcBlock->getTerminator()->getOperands()))
@@ -221,7 +249,7 @@ arc::DefineOp DedupClocksPass::createNoClockArc(arc::DefineOp defineOp,
       newOutputVals.push_back(mapping.lookupOrDefault(operand));
 
   arc::OutputOp::create(bb, loc, newOutputVals);
-  return noClockArc;
+  return result;
 }
 
 //===----------------------------------------------------------------------===//
@@ -232,12 +260,12 @@ void DedupClocksPass::processHwModule(
     hw::HWModuleOp hwModule,
     const DenseMap<StringAttr, ClockArcInfo> &clockArcInfos,
     arc::DefineOp canonicalClockArc,
-    const DenseMap<StringAttr, arc::DefineOp> &noClockArcs) {
+    const DenseMap<StringAttr, NoClockArcInfo> &noClockArcs) {
 
   auto seqClockType = seq::ClockType::get(&getContext());
   StringAttr canonicalName = canonicalClockArc.getNameAttr();
 
-  // Collect all arc.call ops inside this module that produce a !seq.clock.
+  // Collect arc.call ops that produce !seq.clock.
   SmallVector<arc::CallOp> clockCalls;
   hwModule.walk([&](arc::CallOp callOp) {
     if (clockArcInfos.count(callOp.getArcAttr().getAttr()))
@@ -247,7 +275,7 @@ void DedupClocksPass::processHwModule(
   if (clockCalls.empty())
     return;
 
-  // Find the set of unique i1 SSA values used as clock sources.
+  // Collect unique i1 SSA values used as clock sources.
   llvm::SetVector<Value> uniqueClockInputs;
   for (auto callOp : clockCalls) {
     StringAttr arcName = callOp.getArcAttr().getAttr();
@@ -255,10 +283,10 @@ void DedupClocksPass::processHwModule(
     uniqueClockInputs.insert(callOp.getOperand(argIdx));
   }
 
-  // For each unique clock input, insert ONE call to the canonical clock arc at
-  // the very beginning of the module body.  The inputs are always module ports
-  // (block arguments), so they dominate all operations in the body.
-  DenseMap<Value, Value> canonicalClockValues; // i1 value -> !seq.clock value
+  // Insert one canonical clock arc.call per unique clock source at the very
+  // beginning of the module body (clock inputs are always block arguments and
+  // therefore dominate every op in the body).
+  DenseMap<Value, Value> canonicalClockValues;
   {
     Block *body = hwModule.getBodyBlock();
     OpBuilder bodyBuilder(body, body->begin());
@@ -271,39 +299,41 @@ void DedupClocksPass::processHwModule(
     }
   }
 
-  // Replace each clock-producing arc.call with a no-clock version (or erase
-  // it for clock-only arcs) and redirect !seq.clock result uses.
+  // Replace every clock-producing arc.call.
   for (auto callOp : clockCalls) {
     StringAttr arcName = callOp.getArcAttr().getAttr();
     const ClockArcInfo &info = clockArcInfos.find(arcName)->second;
     Value clockInput = callOp.getOperand(info.clockArgIdx);
     Value canonicalClock = canonicalClockValues.at(clockInput);
 
-    // Replace all uses of the clock result first.
+    // Redirect all uses of the !seq.clock result to the canonical value.
     callOp.getResult(info.clockResultIdx).replaceAllUsesWith(canonicalClock);
 
-    // Look up the no-clock replacement arc.
     auto noClockIt = noClockArcs.find(arcName);
-    if (noClockIt == noClockArcs.end() || !noClockIt->second) {
-      // Clock-only arc or not eligible for splitting – just erase.
+    if (noClockIt == noClockArcs.end() || !noClockIt->second.defineOp) {
       callOp.erase();
       continue;
     }
 
-    arc::DefineOp noClockArc = noClockIt->second;
+    const NoClockArcInfo &noClockInfo = noClockIt->second;
+    arc::DefineOp noClockDef = noClockInfo.defineOp; // non-const for method calls
 
-    // Build new result type list (same order, clock result removed).
+    // Build the reduced result type list.
     SmallVector<Type> newResultTypes;
     for (auto [idx, type] : llvm::enumerate(callOp.getResultTypes()))
       if (idx != info.clockResultIdx)
         newResultTypes.push_back(type);
 
-    // Create the replacement call (same operands, updated callee + results).
+    // Build the reduced operand list, dropping removed arguments.
+    SmallVector<Value> newOperands;
+    for (auto [i, operand] : llvm::enumerate(callOp.getOperands()))
+      if (noClockInfo.argMapping[i] != -1)
+        newOperands.push_back(operand);
+
     OpBuilder insertBuilder(callOp);
     auto newCall = arc::CallOp::create(
         insertBuilder, callOp.getLoc(), newResultTypes,
-        FlatSymbolRefAttr::get(noClockArc.getNameAttr()),
-        callOp.getOperands());
+        FlatSymbolRefAttr::get(noClockDef.getNameAttr()), newOperands);
 
     // Remap surviving results.
     unsigned newIdx = 0;
@@ -325,16 +355,11 @@ void DedupClocksPass::runOnOperation() {
   mlir::ModuleOp moduleOp = getOperation();
   MLIRContext *ctx = &getContext();
 
-  // Build a namespace from all existing symbols to avoid name collisions when
-  // generating new arc names.
   Namespace ns;
   ns.add(moduleOp);
-
   OpBuilder builder(ctx);
 
-  // -----------------------------------------------------------------------
-  // Step 1: Find all arc.define ops that produce !seq.clock and are eligible.
-  // -----------------------------------------------------------------------
+  // Step 1: Analyse arc.define ops that produce !seq.clock.
   DenseMap<StringAttr, ClockArcInfo> clockArcInfos;
   SmallVector<arc::DefineOp> clockDefines;
 
@@ -349,47 +374,37 @@ void DedupClocksPass::runOnOperation() {
   if (clockArcInfos.empty())
     return;
 
-  // -----------------------------------------------------------------------
-  // Step 2: Obtain the canonical clock arc (reuse or create).
-  // -----------------------------------------------------------------------
+  // Step 2: Obtain or create the canonical clock arc.
   arc::DefineOp canonicalClockArc =
       getOrCreateCanonicalClockArc(moduleOp, builder, ns);
   StringAttr canonicalName = canonicalClockArc.getNameAttr();
 
-  // -----------------------------------------------------------------------
-  // Step 3: For mixed arcs, create companion "no-clock" arc.define ops.
-  // -----------------------------------------------------------------------
-  DenseMap<StringAttr, arc::DefineOp> noClockArcs;
+  // Step 3: Create no-clock companion arcs for mixed arcs.
+  DenseMap<StringAttr, NoClockArcInfo> noClockArcs;
 
   for (auto defineOp : clockDefines) {
     StringAttr name = defineOp.getNameAttr();
-
-    // The canonical clock arc is handled as a clock-only arc below.
     bool isMixed = defineOp.getFunctionType().getNumResults() > 1;
+
     if (!isMixed || name == canonicalName) {
-      noClockArcs[name] = nullptr; // clock-only, no residual arc needed
+      noClockArcs[name] = NoClockArcInfo{nullptr, {}};
       continue;
     }
 
     std::string noClockName =
         ns.newName((defineOp.getSymName() + "_no_clock").str()).str();
-    arc::DefineOp noClockArc =
-        createNoClockArc(defineOp, clockArcInfos.at(name), noClockName, builder);
-    noClockArcs[name] = noClockArc;
-    if (noClockArc)
-      ns.newName(noClockArc.getSymName()); // reserve the name
+    NoClockArcInfo noClockInfo = createNoClockArc(
+        defineOp, clockArcInfos.at(name), noClockName, builder);
+    if (noClockInfo.defineOp)
+      ns.newName(noClockInfo.defineOp.getSymName()); // reserve
+    noClockArcs[name] = std::move(noClockInfo);
   }
 
-  // -----------------------------------------------------------------------
   // Step 4: Rewrite every hw.module.
-  // -----------------------------------------------------------------------
   for (auto hwModule : moduleOp.getOps<hw::HWModuleOp>())
     processHwModule(hwModule, clockArcInfos, canonicalClockArc, noClockArcs);
 
-  // -----------------------------------------------------------------------
-  // Step 5: Remove the original clock-producing arc.define ops (all callers
-  //         have been updated in step 4).  Keep the canonical clock arc.
-  // -----------------------------------------------------------------------
+  // Step 5: Remove the original clock-producing arc.define ops.
   for (auto defineOp : clockDefines) {
     if (defineOp.getNameAttr() == canonicalName)
       continue;
