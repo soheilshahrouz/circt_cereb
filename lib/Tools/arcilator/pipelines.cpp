@@ -69,6 +69,8 @@ void circt::populateArcConversionPipeline(OpPassManager &pm,
   pm.addPass(hw::createFlattenModules());
   pm.addPass(createCSEPass());
   pm.addPass(arc::createArcCanonicalizer());
+  if (options.shouldDedupClocks)
+    pm.addPass(arc::createDedupClocks());
 }
 
 void circt::populateArcOptimizationPipeline(

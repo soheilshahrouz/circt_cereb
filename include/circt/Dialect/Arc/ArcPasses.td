@@ -42,6 +42,29 @@ def ArcCanonicalizer : Pass<"arc-canonicalizer", "mlir::ModuleOp"> {
   ];
 }
 
+def DedupClocks : Pass<"arc-dedup-clocks", "mlir::ModuleOp"> {
+  let summary = "Deduplicate seq.clock-producing arcs";
+  let description = [{
+    This pass eliminates redundant seq.clock values produced by arc.call
+    operations. It analyses all arc.define ops that return a !seq.clock by
+    applying seq.to_clock to one of their i1 arguments and:
+
+    1. Creates (or reuses) a single canonical clock arc with signature
+       `(%arg0: i1) -> !seq.clock`.
+    2. For each arc that returns !seq.clock together with other results,
+       creates a companion "no-clock" arc that returns only the non-clock
+       results and keeps the same argument list.
+    3. Inside every hw.module, inserts exactly one arc.call to the canonical
+       clock arc per unique i1 clock-source value, and replaces all other
+       !seq.clock results with that single value.
+    4. Removes the original mixed / clock-only arc definitions that are now
+       superseded.
+  }];
+  let dependentDialects = [
+    "arc::ArcDialect", "seq::SeqDialect", "hw::HWDialect"
+  ];
+}
+
 def Dedup : Pass<"arc-dedup", "mlir::ModuleOp"> {
   let summary = "Deduplicate identical arc definitions";
   let description = [{

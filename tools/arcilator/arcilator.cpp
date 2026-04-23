@@ -141,6 +141,13 @@ static llvm::cl::opt<bool> shouldDedup("dedup",
                                        llvm::cl::init(true),
                                        llvm::cl::cat(mainCategory));
 
+static llvm::cl::opt<bool> shouldDedupClocks(
+    "dedup-clocks",
+    llvm::cl::desc(
+        "Deduplicate seq.clock-producing arcs, emitting a single canonical "
+        "arc.call per unique clock source"),
+    llvm::cl::init(false), llvm::cl::cat(mainCategory));
+
 static llvm::cl::opt<bool> shouldDetectEnables(
     "detect-enables",
     llvm::cl::desc("Infer enable conditions for states to avoid computation"),
@@ -362,6 +369,7 @@ static void populateHwModuleToArcPipeline(PassManager &pm) {
   ArcConversionOptions conversionOpt;
   conversionOpt.observeRegisters = observeRegisters || hasTrace;
   conversionOpt.shouldDedup = shouldDedup;
+  conversionOpt.shouldDedupClocks = shouldDedupClocks;
   populateArcConversionPipeline(pm, conversionOpt);
 
   // Perform arc-level optimizations that are not specific to software

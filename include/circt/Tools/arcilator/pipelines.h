@@ -58,6 +58,13 @@ struct ArcConversionOptions : mlir::PassPipelineOptions<ArcConversionOptions> {
 
   Option<bool> shouldDedup{*this, "dedup", llvm::cl::desc("Deduplicate arcs"),
                            llvm::cl::init(true)};
+
+  Option<bool> shouldDedupClocks{
+      *this, "dedup-clocks",
+      llvm::cl::desc(
+          "Deduplicate seq.clock-producing arcs, emitting a single canonical "
+          "arc.call per unique clock source"),
+      llvm::cl::init(false)};
 };
 void populateArcConversionPipeline(mlir::OpPassManager &pm,
                                    const ArcConversionOptions &options = {});
