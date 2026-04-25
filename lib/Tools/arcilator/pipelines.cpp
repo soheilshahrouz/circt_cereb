@@ -71,6 +71,8 @@ void circt::populateArcConversionPipeline(OpPassManager &pm,
   pm.addPass(arc::createArcCanonicalizer());
   if (options.shouldDedupClocks)
     pm.addPass(arc::createDedupClocks());
+  if (options.shouldInlineCallArcs)
+    pm.addPass(arc::createInlineCallArcs());
 }
 
 void circt::populateArcOptimizationPipeline(

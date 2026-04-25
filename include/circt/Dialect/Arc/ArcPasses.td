@@ -125,6 +125,41 @@ def InferMemories : Pass<"arc-infer-memories", "mlir::ModuleOp"> {
   ];
 }
 
+def InlineCallArcs : Pass<"arc-inline-call-arcs", "mlir::ModuleOp"> {
+  let summary = "Inline arc.call combinational logic into consuming arc bodies";
+  let description = [{
+    This pass inlines `arc.call` operations (combinational arcs) into the arc
+    definitions of consuming `arc.state` and `arc.call` operations.
+
+    After `ConvertToArcs`, the hw.module body contains both `arc.call` (pure
+    combinational) and `arc.state` (clocked/latency) operations.  When the
+    results of an `arc.call` are only used as inputs to other arcs it is
+    beneficial to fold the combinational logic directly into those consuming arc
+    definitions, removing the intermediate SSA value.
+
+    For each eligible `arc.call @A(u0..uK)` whose non-clock results are consumed
+    as inputs by `arc.state @B` or `arc.call @C`, the pass:
+
+      1. Creates a new arc definition `@B_inlined` whose argument list is
+         `[kept-B-args...] ++ [A-args...]` and whose body first clones `@A`'s
+         body then clones `@B`'s body (with the removed arguments replaced by
+         the corresponding `@A` result values).
+      2. Updates the call site to pass the kept inputs plus `@A`'s inputs,
+         referencing the new arc definition.
+      3. Removes the original `arc.call @A` and any arc definitions that are no
+         longer referenced.
+
+    Clock-producing arc.calls (wrapping `seq.to_clock`) are not modified.
+    The pass accepts intentional code duplication; a subsequent `arc-dedup` run
+    can eliminate identical copies.
+  }];
+  let dependentDialects = ["arc::ArcDialect"];
+  let statistics = [
+    Statistic<"numCallsInlined", "calls-inlined",
+      "Number of arc.call operations whose results were inlined into consumers">,
+  ];
+}
+
 def InlineArcs : Pass<"arc-inline" , "mlir::ModuleOp"> {
   let summary = "Inline very small arcs";
   let statistics = [

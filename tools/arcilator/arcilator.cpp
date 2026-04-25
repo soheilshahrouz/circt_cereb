@@ -136,6 +136,12 @@ static llvm::cl::opt<bool> shouldInline("inline", llvm::cl::desc("Inline arcs"),
                                         llvm::cl::init(true),
                                         llvm::cl::cat(mainCategory));
 
+static llvm::cl::opt<bool> shouldInlineCallArcs(
+    "inline-call-arcs",
+    llvm::cl::desc(
+        "Inline combinational arc.call logic into consuming arc bodies"),
+    llvm::cl::init(false), llvm::cl::cat(mainCategory));
+
 static llvm::cl::opt<bool> shouldDedup("dedup",
                                        llvm::cl::desc("Deduplicate arcs"),
                                        llvm::cl::init(true),
@@ -370,6 +376,7 @@ static void populateHwModuleToArcPipeline(PassManager &pm) {
   conversionOpt.observeRegisters = observeRegisters || hasTrace;
   conversionOpt.shouldDedup = shouldDedup;
   conversionOpt.shouldDedupClocks = shouldDedupClocks;
+  conversionOpt.shouldInlineCallArcs = shouldInlineCallArcs;
   populateArcConversionPipeline(pm, conversionOpt);
 
   // Perform arc-level optimizations that are not specific to software

@@ -65,6 +65,12 @@ struct ArcConversionOptions : mlir::PassPipelineOptions<ArcConversionOptions> {
           "Deduplicate seq.clock-producing arcs, emitting a single canonical "
           "arc.call per unique clock source"),
       llvm::cl::init(false)};
+
+  Option<bool> shouldInlineCallArcs{
+      *this, "inline-call-arcs",
+      llvm::cl::desc(
+          "Inline combinational arc.call logic into consuming arc bodies"),
+      llvm::cl::init(false)};
 };
 void populateArcConversionPipeline(mlir::OpPassManager &pm,
                                    const ArcConversionOptions &options = {});
