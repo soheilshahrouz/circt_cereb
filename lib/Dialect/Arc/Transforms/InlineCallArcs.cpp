@@ -47,9 +47,7 @@ struct InlineCallArcsPass
 } // namespace
 
 /// Returns true when a value has the seq.clock type.
-static bool isClockType(Value v) {
-  return isa<seq::ClockType>(v.getType());
-}
+static bool isClockType(Value v) { return isa<seq::ClockType>(v.getType()); }
 
 /// Returns true when every result of an operation has the seq.clock type.
 static bool allResultsAreClock(Operation *op) {
@@ -223,10 +221,10 @@ static StringRef stripInlineSuffixes(StringRef name) {
 /// Returns the newly created operation.  For arc.state consumers this is an
 /// arc.state; for arc.call consumers it is the new arc.call that replaced the
 /// old one (the old one is erased and recorded in \p erasedCallOps).
-static Operation *updateConsumerOp(Operation *consumerOp, DefineOp newArcDef,
-                                   CallOp producerCall,
-                                   ArrayRef<int64_t> inputToProducerResult,
-                                   SmallPtrSetImpl<Operation *> &erasedCallOps) {
+static Operation *
+updateConsumerOp(Operation *consumerOp, DefineOp newArcDef, CallOp producerCall,
+                 ArrayRef<int64_t> inputToProducerResult,
+                 SmallPtrSetImpl<Operation *> &erasedCallOps) {
   auto newArcRef = SymbolRefAttr::get(newArcDef.getSymNameAttr());
   OperandRange oldInputs = getArcInputs(consumerOp);
 
@@ -243,11 +241,10 @@ static Operation *updateConsumerOp(Operation *consumerOp, DefineOp newArcDef,
 
   if (auto stateOp = dyn_cast<arc::StateOp>(consumerOp)) {
     // Preserve all arc.state properties; only arc ref and inputs change.
-    auto newState =
-        StateOp::create(builder, loc, newArcRef, stateOp->getResultTypes(),
-                        stateOp.getClock(), stateOp.getEnable(),
-                        stateOp.getReset(), stateOp.getLatency(), newInputs,
-                        stateOp.getInitials());
+    auto newState = StateOp::create(
+        builder, loc, newArcRef, stateOp->getResultTypes(), stateOp.getClock(),
+        stateOp.getEnable(), stateOp.getReset(), stateOp.getLatency(),
+        newInputs, stateOp.getInitials());
     // Forward any extra attributes (e.g. "names" tap attributes).
     for (auto namedAttr : stateOp->getAttrDictionary())
       if (!newState->hasAttr(namedAttr.getName()))
@@ -287,11 +284,6 @@ void InlineCallArcsPass::runOnOperation() {
   // Track arc definitions that may have become unused after transformations.
   SmallVector<DefineOp> defsToCheckForRemoval;
 
-  // Track arc.call ops that were consumed (erased) while acting as consumers
-  // of another arc.call.  They may still appear in the worklist, so we need
-  // to skip them when encountered as producers.
-  SmallPtrSet<Operation *, 16> erasedCallOps;
-
   // Process each hw.module (the flat body after ConvertToArcs).
   for (auto hwModule : module.getOps<hw::HWModuleOp>()) {
     Block &body = *hwModule.getBodyBlock();
@@ -306,14 +298,20 @@ void InlineCallArcsPass::runOnOperation() {
       anyInlinedThisRound = false;
 
       // Seed the worklist with all non-clock arc.call ops still in the body.
-      // Newly created arc.calls (from inlining into arc.call consumers) are
-      // pushed to the back so chains are resolved without waiting for the next
-      // outer iteration.
+      // Replacement arc.calls are picked up by the next outer iteration.  This
+      // avoids treating a newly allocated op at a reused address as a stale
+      // erased worklist entry.
       std::deque<CallOp> worklist;
       for (auto &op : body)
         if (auto callOp = dyn_cast<arc::CallOp>(&op))
           if (!callOp.getResults().empty() && !allResultsAreClock(callOp))
             worklist.push_back(callOp);
+
+      // Track arc.call ops that were consumed (erased) while acting as
+      // consumers of another arc.call in this worklist.  They may still appear
+      // later in the pre-seeded worklist, so skip them when encountered as
+      // producers.
+      SmallPtrSet<Operation *, 16> erasedCallOps;
 
       while (!worklist.empty()) {
         CallOp producerCall = worklist.front();
@@ -401,23 +399,15 @@ void InlineCallArcsPass::runOnOperation() {
                                                 inputMapping, newName, ilob);
           arcDefs[newArcDef.getSymNameAttr()] = newArcDef;
 
-          LLVM_DEBUG(llvm::dbgs()
-                     << "[inline-call-arcs] inlined '"
-                     << producerDef.getSymName() << "' into '"
-                     << consumerDef.getSymName() << "' → '" << newName
-                     << "'\n");
+          LLVM_DEBUG(llvm::dbgs() << "[inline-call-arcs] inlined '"
+                                  << producerDef.getSymName() << "' into '"
+                                  << consumerDef.getSymName() << "' → '"
+                                  << newName << "'\n");
 
-          // Replace the consumer call site; the returned op is the fresh
-          // replacement (erased ops are also recorded in erasedCallOps).
-          Operation *newConsumerOp = updateConsumerOp(
-              consumerOp, newArcDef, producerCall, inputMapping, erasedCallOps);
-
-          // If the new consumer is itself an arc.call, push it so chains of
-          // arc.call→arc.call→arc.state are resolved within this outer round.
-          if (auto newCallOp =
-                  llvm::dyn_cast_if_present<arc::CallOp>(newConsumerOp))
-            if (!allResultsAreClock(newCallOp))
-              worklist.push_back(newCallOp);
+          // Replace the consumer call site; erased ops are recorded in
+          // erasedCallOps so stale entries in this worklist are skipped.
+          updateConsumerOp(consumerOp, newArcDef, producerCall, inputMapping,
+                           erasedCallOps);
 
           defsToCheckForRemoval.push_back(consumerDef);
           ++numCallsInlined;
