@@ -22,6 +22,7 @@
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/Support/Debug.h"
+#include <cctype>
 #include <deque>
 
 #define DEBUG_TYPE "arc-inline-call-arcs"
@@ -175,6 +176,43 @@ static DefineOp createInlinedArc(DefineOp producerDef, DefineOp consumerDef,
   newArc.getBody().push_back(newBlock.release());
 
   return newArc;
+}
+
+/// Strip trailing inlining suffixes repeatedly. This keeps names from growing
+/// without bound across nested inlining.
+///
+/// Historically this pass appended "_inlined" and later we switched to a shorter
+/// "_inl". Handle both forms (and their numeric disambiguators).
+static StringRef stripInlineSuffixes(StringRef name) {
+  while (true) {
+    if (name.consume_back("_inlined"))
+      continue;
+
+    // Match a trailing "_inlined_<digits>" suffix.
+    size_t pos = name.rfind("_inlined_");
+    if (pos != StringRef::npos) {
+      StringRef tail = name.drop_front(pos + StringRef("_inlined_").size());
+      if (!tail.empty() &&
+          llvm::all_of(tail, [](char c) { return std::isdigit(c); })) {
+        name = name.take_front(pos);
+        continue;
+      }
+    }
+
+    if (name.consume_back("_inl"))
+      continue;
+
+    // Match a trailing "_inl_<digits>" suffix.
+    pos = name.rfind("_inl_");
+    if (pos == StringRef::npos)
+      break;
+    StringRef tail = name.drop_front(pos + StringRef("_inl_").size());
+    if (tail.empty() ||
+        !llvm::all_of(tail, [](char c) { return std::isdigit(c); }))
+      break;
+    name = name.take_front(pos);
+  }
+  return name;
 }
 
 /// Replace consumerOp (arc.state or arc.call) with a new op that:
@@ -352,8 +390,10 @@ void InlineCallArcsPass::runOnOperation() {
             continue;
 
           // Generate a unique name for the new inlined arc.
-          std::string newName =
-              ns.newName(consumerDef.getSymName() + "_inlined").str();
+          StringRef baseName = stripInlineSuffixes(consumerDef.getSymName());
+          if (baseName.empty())
+            baseName = consumerDef.getSymName();
+          std::string newName = ns.newName(baseName + "_inl").str();
 
           // Insert the new arc definition immediately before the consumer def.
           ImplicitLocOpBuilder ilob(consumerDef.getLoc(), consumerDef);
