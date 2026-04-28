@@ -375,8 +375,6 @@ static void populateHwModuleToArcPipeline(PassManager &pm) {
   ArcConversionOptions conversionOpt;
   conversionOpt.observeRegisters = observeRegisters || hasTrace;
   conversionOpt.shouldDedup = shouldDedup;
-  conversionOpt.shouldDedupClocks = shouldDedupClocks;
-  conversionOpt.shouldInlineCallArcs = shouldInlineCallArcs;
   populateArcConversionPipeline(pm, conversionOpt);
 
   // Perform arc-level optimizations that are not specific to software
@@ -385,9 +383,12 @@ static void populateHwModuleToArcPipeline(PassManager &pm) {
     return;
 
   ArcOptimizationOptions optimizationOpt;
+  optimizationOpt.shouldDedup = shouldDedup;
   optimizationOpt.shouldDetectEnables = shouldDetectEnables;
   optimizationOpt.shouldDetectResets = shouldDetectResets;
   optimizationOpt.shouldMakeLUTs = shouldMakeLUTs;
+  optimizationOpt.shouldDedupClocks = shouldDedupClocks;
+  optimizationOpt.shouldInlineCallArcs = shouldInlineCallArcs;
   populateArcOptimizationPipeline(pm, optimizationOpt);
 
   // Lower stateful arcs into explicit state reads and writes.

@@ -69,10 +69,6 @@ void circt::populateArcConversionPipeline(OpPassManager &pm,
   pm.addPass(hw::createFlattenModules());
   pm.addPass(createCSEPass());
   pm.addPass(arc::createArcCanonicalizer());
-  if (options.shouldDedupClocks)
-    pm.addPass(arc::createDedupClocks());
-  if (options.shouldInlineCallArcs)
-    pm.addPass(arc::createInlineCallArcs());
 }
 
 void circt::populateArcOptimizationPipeline(
@@ -82,6 +78,12 @@ void circt::populateArcOptimizationPipeline(
   pm.addPass(arc::createSplitLoops());
   if (options.shouldDedup)
     pm.addPass(arc::createDedup());
+
+  if (options.shouldDedupClocks)
+    pm.addPass(arc::createDedupClocks());
+  if (options.shouldInlineCallArcs)
+    pm.addPass(arc::createInlineCallArcs());
+
   {
     arc::InferStatePropertiesOptions opts;
     opts.detectEnables = options.shouldDetectEnables;

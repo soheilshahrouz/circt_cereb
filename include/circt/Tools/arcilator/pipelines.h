@@ -58,19 +58,6 @@ struct ArcConversionOptions : mlir::PassPipelineOptions<ArcConversionOptions> {
 
   Option<bool> shouldDedup{*this, "dedup", llvm::cl::desc("Deduplicate arcs"),
                            llvm::cl::init(true)};
-
-  Option<bool> shouldDedupClocks{
-      *this, "dedup-clocks",
-      llvm::cl::desc(
-          "Deduplicate seq.clock-producing arcs, emitting a single canonical "
-          "arc.call per unique clock source"),
-      llvm::cl::init(false)};
-
-  Option<bool> shouldInlineCallArcs{
-      *this, "inline-call-arcs",
-      llvm::cl::desc(
-          "Inline combinational arc.call logic into consuming arc bodies"),
-      llvm::cl::init(false)};
 };
 void populateArcConversionPipeline(mlir::OpPassManager &pm,
                                    const ArcConversionOptions &options = {});
@@ -95,6 +82,19 @@ struct ArcOptimizationOptions
   Option<bool> shouldMakeLUTs{
       *this, "lookup-tables",
       llvm::cl::desc("Optimize arcs into lookup tables"), llvm::cl::init(true)};
+
+  Option<bool> shouldDedupClocks{
+      *this, "dedup-clocks",
+      llvm::cl::desc(
+          "Deduplicate seq.clock-producing arcs, emitting a single canonical "
+          "arc.call per unique clock source"),
+      llvm::cl::init(false)};
+
+  Option<bool> shouldInlineCallArcs{
+      *this, "inline-call-arcs",
+      llvm::cl::desc(
+          "Inline combinational arc.call logic into consuming arc bodies"),
+      llvm::cl::init(false)};
 };
 void populateArcOptimizationPipeline(
     mlir::OpPassManager &pm, const ArcOptimizationOptions &options = {});
