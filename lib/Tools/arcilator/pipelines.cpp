@@ -83,6 +83,10 @@ void circt::populateArcOptimizationPipeline(
     pm.addPass(arc::createDedupClocks());
   if (options.shouldInlineCallArcs)
     pm.addPass(arc::createInlineCallArcs());
+  if (options.shouldSpecializeStateConstants)
+    pm.addPass(arc::createSpecializeStateConstants());
+  if (options.shouldDedupCallArguments)
+    pm.addPass(arc::createDedupCallArguments());
 
   {
     arc::InferStatePropertiesOptions opts;

@@ -95,6 +95,17 @@ struct ArcOptimizationOptions
       llvm::cl::desc(
           "Inline combinational arc.call logic into consuming arc bodies"),
       llvm::cl::init(false)};
+
+  Option<bool> shouldSpecializeStateConstants{
+      *this, "specialize-state-constants",
+      llvm::cl::desc(
+          "Specialize arc.state definitions for constant input operands"),
+      llvm::cl::init(false)};
+
+  Option<bool> shouldDedupCallArguments{
+      *this, "dedup-call-arguments",
+      llvm::cl::desc("Specialize arcs for duplicate call-site arguments"),
+      llvm::cl::init(true)};
 };
 void populateArcOptimizationPipeline(
     mlir::OpPassManager &pm, const ArcOptimizationOptions &options = {});

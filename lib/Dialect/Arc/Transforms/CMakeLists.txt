@@ -3,6 +3,7 @@ add_circt_dialect_library(CIRCTArcTransforms
   AllocateState.cpp
   ArcCanonicalizer.cpp
   Dedup.cpp
+  DedupCallArguments.cpp
   DedupClocks.cpp
   FindInitialVectors.cpp
   InferMemories.cpp
@@ -25,6 +26,7 @@ add_circt_dialect_library(CIRCTArcTransforms
   PrintCostModel.cpp
   ResolveXMRRef.cpp
   SimplifyVariadicOps.cpp
+  SpecializeStateConstants.cpp
   SplitFuncs.cpp
   SplitLoops.cpp
   StripSV.cpp

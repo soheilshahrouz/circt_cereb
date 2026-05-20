@@ -65,6 +65,29 @@ def DedupClocks : Pass<"arc-dedup-clocks", "mlir::ModuleOp"> {
   ];
 }
 
+def DedupCallArguments : Pass<"arc-dedup-call-arguments", "mlir::ModuleOp"> {
+  let summary = "Specialize arcs for call sites with duplicate arguments";
+  let description = [{
+    This pass rewrites `arc.state` and `arc.call` operations that pass the same
+    SSA value to multiple input positions of a callee. For each distinct
+    duplicate-argument pattern, the referenced `arc.define` is cloned with one
+    argument per unique input value at that call site. All original block
+    arguments in a duplicate group are mapped to the same new block argument,
+    and the call site is updated to pass each distinct value once.
+
+    Different duplicate patterns on the same `arc.define` create separate
+    specialized definitions. The original definition is kept while any call site
+    still uses its full arity.
+  }];
+  let dependentDialects = ["arc::ArcDialect"];
+  let statistics = [
+    Statistic<"numSitesFixed", "sites-fixed",
+      "Number of arc.state or arc.call operations deduplicated">,
+    Statistic<"numArcsCreated", "arcs-created",
+      "Number of deduplicated arc definitions created">,
+  ];
+}
+
 def Dedup : Pass<"arc-dedup", "mlir::ModuleOp"> {
   let summary = "Deduplicate identical arc definitions";
   let description = [{
@@ -157,6 +180,31 @@ def InlineCallArcs : Pass<"arc-inline-call-arcs", "mlir::ModuleOp"> {
   let statistics = [
     Statistic<"numCallsInlined", "calls-inlined",
       "Number of arc.call operations whose results were inlined into consumers">,
+  ];
+}
+
+def SpecializeStateConstants : Pass<"arc-specialize-state-constants",
+                                    "mlir::ModuleOp"> {
+  let summary = "Specialize arcs for state inputs driven by constants";
+  let description = [{
+    This pass rewrites `arc.state` operations that pass `hw.constant` values as
+    arc inputs. For each distinct constant input pattern, the referenced
+    `arc.define` is cloned, the constant arguments are removed from the clone's
+    signature, and equivalent `hw.constant` operations are materialized inside
+    the cloned arc body. The state operation is then updated to call the
+    specialized arc without passing those constants.
+
+    If a single `arc.define` is used by multiple states with different constant
+    values, the pass creates one specialized `arc.define` per distinct constant
+    pattern and leaves the original definition available for non-specialized
+    users.
+  }];
+  let dependentDialects = ["arc::ArcDialect", "hw::HWDialect"];
+  let statistics = [
+    Statistic<"numSpecializedStates", "states-specialized",
+      "Number of arc.state operations specialized">,
+    Statistic<"numSpecializedArcs", "arcs-created",
+      "Number of specialized arc definitions created">,
   ];
 }
 

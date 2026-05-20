@@ -142,6 +142,12 @@ static llvm::cl::opt<bool> shouldInlineCallArcs(
         "Inline combinational arc.call logic into consuming arc bodies"),
     llvm::cl::init(false), llvm::cl::cat(mainCategory));
 
+static llvm::cl::opt<bool> shouldSpecializeStateConstants(
+    "specialize-state-constants",
+    llvm::cl::desc("Specialize arc.state definitions for constant input "
+                   "operands"),
+    llvm::cl::init(false), llvm::cl::cat(mainCategory));
+
 static llvm::cl::opt<bool> shouldDedup("dedup",
                                        llvm::cl::desc("Deduplicate arcs"),
                                        llvm::cl::init(true),
@@ -153,6 +159,11 @@ static llvm::cl::opt<bool> shouldDedupClocks(
         "Deduplicate seq.clock-producing arcs, emitting a single canonical "
         "arc.call per unique clock source"),
     llvm::cl::init(false), llvm::cl::cat(mainCategory));
+
+static llvm::cl::opt<bool> shouldDedupCallArguments(
+    "dedup-call-arguments",
+    llvm::cl::desc("Specialize arcs for duplicate call-site arguments"),
+    llvm::cl::init(true), llvm::cl::cat(mainCategory));
 
 static llvm::cl::opt<bool> shouldDetectEnables(
     "detect-enables",
@@ -389,6 +400,9 @@ static void populateHwModuleToArcPipeline(PassManager &pm) {
   optimizationOpt.shouldMakeLUTs = shouldMakeLUTs;
   optimizationOpt.shouldDedupClocks = shouldDedupClocks;
   optimizationOpt.shouldInlineCallArcs = shouldInlineCallArcs;
+  optimizationOpt.shouldSpecializeStateConstants =
+      shouldSpecializeStateConstants;
+  optimizationOpt.shouldDedupCallArguments = shouldDedupCallArguments;
   populateArcOptimizationPipeline(pm, optimizationOpt);
 
   // Lower stateful arcs into explicit state reads and writes.
