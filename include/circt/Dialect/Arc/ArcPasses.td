@@ -88,6 +88,21 @@ def DedupCallArguments : Pass<"arc-dedup-call-arguments", "mlir::ModuleOp"> {
   ];
 }
 
+def RemoveUnusedDefines : Pass<"arc-remove-unused-defines", "mlir::ModuleOp"> {
+  let summary = "Remove arc.define operations with no symbol users";
+  let description = [{
+    This pass deletes `arc.define` operations that are not referenced by any
+    symbol user. The cleanup runs to a fixed point so deleting an unused
+    definition can make definitions referenced only from its body eligible for
+    removal as well.
+  }];
+  let dependentDialects = ["arc::ArcDialect"];
+  let statistics = [
+    Statistic<"numDefinesRemoved", "num-defines-removed",
+      "Number of arc.define operations removed">,
+  ];
+}
+
 def Dedup : Pass<"arc-dedup", "mlir::ModuleOp"> {
   let summary = "Deduplicate identical arc definitions";
   let description = [{

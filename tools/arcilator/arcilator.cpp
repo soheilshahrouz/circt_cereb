@@ -165,6 +165,11 @@ static llvm::cl::opt<bool> shouldDedupCallArguments(
     llvm::cl::desc("Specialize arcs for duplicate call-site arguments"),
     llvm::cl::init(true), llvm::cl::cat(mainCategory));
 
+static llvm::cl::opt<bool> shouldRemoveUnusedDefines(
+    "remove-unused-defines",
+    llvm::cl::desc("Remove unused arc.define operations"),
+    llvm::cl::init(true), llvm::cl::cat(mainCategory));
+
 static llvm::cl::opt<bool> shouldDetectEnables(
     "detect-enables",
     llvm::cl::desc("Infer enable conditions for states to avoid computation"),
@@ -403,6 +408,7 @@ static void populateHwModuleToArcPipeline(PassManager &pm) {
   optimizationOpt.shouldSpecializeStateConstants =
       shouldSpecializeStateConstants;
   optimizationOpt.shouldDedupCallArguments = shouldDedupCallArguments;
+  optimizationOpt.shouldRemoveUnusedDefines = shouldRemoveUnusedDefines;
   populateArcOptimizationPipeline(pm, optimizationOpt);
 
   // Lower stateful arcs into explicit state reads and writes.

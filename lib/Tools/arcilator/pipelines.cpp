@@ -87,6 +87,8 @@ void circt::populateArcOptimizationPipeline(
     pm.addPass(arc::createSpecializeStateConstants());
   if (options.shouldDedupCallArguments)
     pm.addPass(arc::createDedupCallArguments());
+  if (options.shouldRemoveUnusedDefines)
+    pm.addPass(arc::createRemoveUnusedDefines());
 
   {
     arc::InferStatePropertiesOptions opts;

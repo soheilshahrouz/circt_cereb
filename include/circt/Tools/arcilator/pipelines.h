@@ -106,6 +106,11 @@ struct ArcOptimizationOptions
       *this, "dedup-call-arguments",
       llvm::cl::desc("Specialize arcs for duplicate call-site arguments"),
       llvm::cl::init(true)};
+
+  Option<bool> shouldRemoveUnusedDefines{
+      *this, "remove-unused-defines",
+      llvm::cl::desc("Remove unused arc.define operations"),
+      llvm::cl::init(true)};
 };
 void populateArcOptimizationPipeline(
     mlir::OpPassManager &pm, const ArcOptimizationOptions &options = {});
